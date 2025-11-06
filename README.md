@@ -18,11 +18,17 @@ Script automatizado para eliminar archivos antiguos en sistemas locales y remoto
 ### Estructura de archivos
 
 limpieza-archivos/
+
 ├── limpieza.py # Script principal
+
 ├── config.json # Configuración de RUTAS (NO SUBIR AL GIT)
+
 ├── config.json.example # Ejemplo de configuración
+
 ├── credenciales.json # CREDENCIALES (NO SUBIR AL GIT)
+
 ├── credenciales.json.example # Ejmeplo de credenciales
+
 └── logs/ # Logs automáticos
 
 
@@ -154,6 +160,7 @@ limpieza_YYYYMMDD_HHMMSS.log
 ```
 
 Ejemplo de contenido del log:
+
 2024-01-15 14:30:22 - INFO - INICIO del proceso de eliminación de archivos antiguos
 2024-01-15 14:30:25 - INFO - Conectando SSH a 192.168.1.100:22 (alias: servidor_ssh)
 2024-01-15 14:30:30 - INFO - ELIMINADO (SSH): /home/usuario/backups/archivo_viejo.log
