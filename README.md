@@ -49,6 +49,7 @@ Crear `config.json` con la siguiente estructura (SOLO rutas):
         }
     }
 }
+```
 
 ## Instalación
 
@@ -71,11 +72,13 @@ pip install paramiko
 ```bash
 git clone https://github.com/bontivero/limpieza_ficheros.git
 cd limpieza-
+```
 
 2. **Configurar los archivos:
 ```bash
 cp config.json.example config.json
 cp credenciales.json.example credenciales.json
+```
 
 3. **Editar la configuración:
 
@@ -86,6 +89,7 @@ cp credenciales.json.example credenciales.json
 ```bash
 chmod 600 credenciales.json
 chmod 755 limpieza.py
+```
 
 ## Ejecución Manual
 
@@ -98,6 +102,7 @@ python limpieza.py config.json credenciales.json
 
 # Con Python 2.7
 python2 limpieza.py config.json
+```
 
 ## Ejecución programada con Crontab
 
@@ -110,40 +115,43 @@ crontab -e
 
 # Ejecutar cada 6 horas
 0 */6 * * * /usr/bin/python /ruta/limpieza-archivos/limpieza.py /ruta/limpieza-archivos/config.json
+```
 
 ## Configuración de Sudo en servidores remotos
 
-#Cuando se usa "necesita_sudo": true en conexiones SSH, es necesario #configurar el servidor remoto para permitir ejecución de comandos sudo sin TTY
+Cuando se usa "necesita_sudo": true en conexiones SSH, es necesario configurar el servidor remoto para permitir ejecución de comandos sudo sin TTY
 
-#¿Cuándo usar necesita_sudo?
+¿Cuándo usar necesita_sudo?
 - false (recomendado): Cuando el usuario tiene permisos de escritura en las rutas
 - true: Cuando se necesitan permisos de root para eliminar archivos (ej: /var/log/, /tmp/system/)
 
 
 ## Solución de Problemas
 
-#Error: "paramiko no está instalado"
+Error: "paramiko no está instalado"
 ```bash
 pip install paramiko
+```
 
-#Error de permisos en SSH con sudo
+Error de permisos en SSH con sudo
 - Verificar configuración sudoers en el servidor remoto
 - Confirmar que necesita_sudo esté en true
 - Probar conexión manualmente: ssh usuario@servidor "sudo ls /ruta"
 
-#Error de conexión FTP
+Error de conexión FTP
 - Verificar que el servidor FTP esté activo
 - Confirmar puerto (normalmente 21)
 - Verificar credenciales
 
-#Los logs no se generan
+Los logs no se generan
 - Verificar que el directorio logs/ exista y tenga permisos de escritura
 - Verificar permisos del script: chmod 755 limpieza.py
 
-#Estructura de Logs
+Estructura de Logs
 Los logs se generan automáticamente en el directorio logs/ con formato:
 ```bash
 limpieza_YYYYMMDD_HHMMSS.log
+```
 
 Ejemplo de contenido del log:
 2024-01-15 14:30:22 - INFO - INICIO del proceso de eliminación de archivos antiguos
