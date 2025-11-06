@@ -1,0 +1,16 @@
+### Archivo de ejemplo (config.json.example)
+{
+    "conexiones": {
+        "ejemplo_ssh": {
+            "tipo": "ssh",
+            "host": "servidor.ejemplo.com",
+            "puerto": 22,
+            "usuario": "TU_USUARIO",
+            "contraseña": "TU_CONTRASEÑA",
+            "necesita_sudo": false,
+            "rutas": [
+                {"ruta": "/ruta/backup/aplicacion", "dias": 30}
+            ]
+        }
+    }
+}

@@ -1,0 +1,21 @@
+### Archivo de ejemplo (config.json.example)
+{
+    "servidor_1_9": {
+        "host": "ssh.servidor.com",
+        "puerto": 22,
+        "usuario": "usuario_ssh",
+        "contraseña": "tu_contraseña_segura"
+    },
+    "servidor_sftp_seguro": {
+        "host": "sftp.servidor.com",
+        "puerto": 22,
+        "usuario": "usuario_sftp",
+        "contraseña": "contraseña_sftp_segura"
+    },
+    "servidor_ftp_legacy": {
+        "host": "ftp.servidor.com",
+        "puerto": 21,
+        "usuario": "usuario_ftp",
+        "contraseña": "contraseña_ftp_segura"
+    }
+}

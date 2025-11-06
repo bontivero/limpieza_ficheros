@@ -1,0 +1,12 @@
+# Ejecutar diariamente a las 2:00 AM
+0 2 * * * /ruta/completa/script.py /ruta/completa/config.txt
+
+# Ejecutar diariamente a las 2:00 AM especificando la ruta de instalación de python
+0 2 * * * /usr/bin/python3 /ruta/completa/script.py /ruta/completa/config.txt
+
+# Ejecutar todos los lunes a las 3:00 AM
+0 3 * * 1 /ruta/completa/script.py /ruta/completa/config.txt
+
+# Ejecutar el primer día de cada mes a las 1:00 AM
+0 1 1 * * /ruta/completa/script.py /ruta/completa/config.txt
+
