@@ -162,8 +162,11 @@ limpieza_YYYYMMDD_HHMMSS.log
 Ejemplo de contenido del log:
 
 2024-01-15 14:30:22 - INFO - INICIO del proceso de eliminación de archivos antiguos
+
 2024-01-15 14:30:25 - INFO - Conectando SSH a 192.168.1.100:22 (alias: servidor_ssh)
+
 2024-01-15 14:30:30 - INFO - ELIMINADO (SSH): /home/usuario/backups/archivo_viejo.log
+
 2024-01-15 14:30:35 - INFO - Resumen servidor_ssh: 15 eliminados, 0 errores
 
 
