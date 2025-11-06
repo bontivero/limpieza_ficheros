@@ -1,12 +1,22 @@
-# Ejecutar diariamente a las 2:00 AM
-0 2 * * * /ruta/completa/script.py /ruta/completa/config.txt
+# ==================================================
+# Script de Limpieza de Archivos Antiguos
+# Configuración con archivos separados
+# ==================================================
 
-# Ejecutar diariamente a las 2:00 AM especificando la ruta de instalación de python
-0 2 * * * /usr/bin/python3 /ruta/completa/script.py /ruta/completa/config.txt
+# Ejecutar diariamente a las 2:00 AM (sin especificar credenciales - las busca automáticamente)
+0 2 * * * /usr/bin/python3 /ruta/completa/limpieza.py /ruta/completa/config.json
+
+# Ejecutar diariamente a las 2:00 AM (especificando credenciales explícitamente)
+0 2 * * * /usr/bin/python3 /ruta/completa/limpieza.py /ruta/completa/config.json /ruta/completa/credenciales.json
 
 # Ejecutar todos los lunes a las 3:00 AM
-0 3 * * 1 /ruta/completa/script.py /ruta/completa/config.txt
+0 3 * * 1 /usr/bin/python3 /ruta/completa/limpieza.py /ruta/completa/config.json
 
 # Ejecutar el primer día de cada mes a las 1:00 AM
-0 1 1 * * /ruta/completa/script.py /ruta/completa/config.txt
+0 1 1 * * /usr/bin/python3 /ruta/completa/limpieza.py /ruta/completa/config.json /ruta/completa/credenciales.json
 
+# Ejecutar cada 6 horas (para testing frecuente)
+0 */6 * * * /usr/bin/python3 /ruta/completa/limpieza.py /ruta/completa/config.json
+
+# Ejecutar los domingos a las 4:00 AM con log específico
+0 4 * * 0 /usr/bin/python3 /ruta/completa/limpieza.py /ruta/completa/config.json >> /var/log/limpieza_cron.log 2>&1
