@@ -1,18 +1,38 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 """
-Script para eliminar archivos antiguos basado en un archivo de configuración.
+Script para eliminar archivos antiguos basado en un archivo de configuración JSON.
 
-Este script lee un archivo de configuración que especifica rutas (locales, SSH, SFTP o FTP) y tiempos
-en días para eliminar archivos recursivamente. Las credenciales se almacenan en un archivo separado.
+Este script lee un archivo de configuración JSON que especifica rutas (locales, SSH, SFTP o FTP), 
+tiempos en días para eliminar archivos recursivamente y máscaras opcionales para filtrar por nombre. 
+Las credenciales se almacenan en un archivo separado.
 
-Formato del archivo de configuración:
-LOCAL: /ruta/directorio/|dias
-SSH: ssh://alias_servidor/ruta|dias
-SFTP: sftp://alias_servidor/ruta|dias
-FTP: ftp://alias_servidor/ruta|dias
+Estructura del archivo de rutas y configuración (config.json) explicado y ejemplificado
+en config.json.example
 
-config.json -> Rutas y configuración
-credenciales.json -> Credenciales de acceso
+Estructura del archivo de credenciales de acceso (credenciales.json) explicado y ejemplificado
+en credenciales.json.example
+
+La máscara permite filtrar archivos por nombre usando patrones fnmatch:
+- "ldr_*"    - archivos que comienzan con "ldr_"
+- "*.log"    - archivos con extensión .log
+- "*backup*" - archivos que contienen "backup"
+- "data_???" - archivos que comienzan con "data_" seguido de 3 caracteres
+- Si no se especifica máscara, se procesan todos los archivos
+
+Funcionalidades:
+- Eliminación recursiva de archivos antiguos en rutas locales
+- Conexión SSH para ejecución remota de comandos
+- Conexión SFTP para manipulación remota de archivos
+- Conexión FTP para servidores FTP tradicionales
+- Log detallado con resumen de operaciones
+- Manejo de errores con registro de archivos problemáticos
+- Soporte para sudo en conexiones SSH
+- Una sola conexión por servidor para múltiples rutas
+
+Uso:
+    python limpieza.py config.json [credenciales.json]
+
+Nota: Para conexiones SSH/SFTP se requiere la librería paramiko.
 """
 
 import os
@@ -21,7 +41,13 @@ import time
 import datetime
 import logging
 import ftplib
+import fnmatch
 import json
+
+try:
+    from urlparse import urlparse  # Python 2
+except ImportError:
+    from urllib.parse import urlparse  # Python 3
 
 PARAMIKO_DISPONIBLE = False
 try:
@@ -29,12 +55,6 @@ try:
     PARAMIKO_DISPONIBLE = True
 except ImportError:
     pass
-
-# Compatibilidad con Python 2.7
-try:
-    from urllib.parse import urlparse
-except ImportError:
-    from urlparse import urlparse
 
 def configurar_logging():
     """
@@ -52,14 +72,16 @@ def configurar_logging():
     if not os.path.exists(logs_dir):
         try:
             os.makedirs(logs_dir)
-        except OSError:
-            pass
+        except OSError as e:
+            logging.error(f"Error creando directorio de logs: {e}")
+            # Usar directorio actual si no se puede crear logs
+            logs_dir = script_dir
     
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log_filename = "limpieza_{}.log".format(timestamp)
     log_path = os.path.join(logs_dir, log_filename)
     
-    # Configurar logging para Python 2.7
+    # Configurar logging para Python 2.x
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     
@@ -67,16 +89,19 @@ def configurar_logging():
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
     
-    # Formateador
+    # Formato del log
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', 
                                   datefmt='%Y-%m-%d %H:%M:%S')
     
-    # Handler de archivo
-    file_handler = logging.FileHandler(log_path)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    # Handler para archivo
+    try:
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except Exception as e:
+        print("Error creando archivo de log: {}".format(e))
     
-    # Handler de consola
+    # Handler para consola
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
@@ -94,20 +119,21 @@ def cargar_configuracion(config_file):
         dict: Configuración cargada
     """
     try:
+        # Python 2.x necesita abrir el archivo sin encoding específico
         with open(config_file, 'r') as f:
             config = json.load(f)
         
-        logging.info("Configuración cargada desde: %s", config_file)
+        logging.info("Configuración cargada desde: {}".format(config_file))
         return config
         
     except IOError:
-        logging.error("Archivo de configuración no encontrado: %s", config_file)
+        logging.error("Archivo de configuración no encontrado: {}".format(config_file))
         raise
-    except ValueError as e:
-        logging.error("Error parseando archivo de configuración: %s", e)
+    except ValueError as e:  # JSONDecodeError en Python 2 es ValueError
+        logging.error("Error parseando archivo de configuración: {}".format(e))
         raise
     except Exception as e:
-        logging.error("Error cargando configuración: %s", e)
+        logging.error("Error cargando configuración: {}".format(e))
         raise
 
 def cargar_credenciales(credenciales_file=None):
@@ -121,10 +147,13 @@ def cargar_credenciales(credenciales_file=None):
         dict: Diccionario con las credenciales cargadas o vacío si hay error
     """
     if credenciales_file is None:
+        # Obtener directorio del script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
         ubicaciones = [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "credenciales.json"),
+            os.path.join(script_dir, "credenciales.json"),
             "/etc/limpieza/credenciales.json",
-            os.path.expanduser("~/.limpieza_credenciales.json")
+            os.path.join(os.path.expanduser("~"), ".limpieza_credenciales.json")
         ]
         
         for ubicacion in ubicaciones:
@@ -139,17 +168,17 @@ def cargar_credenciales(credenciales_file=None):
         with open(credenciales_file, 'r') as f:
             credenciales = json.load(f)
         
-        logging.info("Credenciales cargadas desde: %s", credenciales_file)
+        logging.info("Credenciales cargadas desde: {}".format(credenciales_file))
         return credenciales
         
     except IOError:
-        logging.error("Archivo de credenciales no encontrado: %s", credenciales_file)
+        logging.error("Archivo de credenciales no encontrado: {}".format(credenciales_file))
         return {}
     except ValueError as e:
-        logging.error("Error parseando archivo de credenciales: %s", e)
+        logging.error("Error parseando archivo de credenciales: {}".format(e))
         return {}
     except Exception as e:
-        logging.error("Error cargando credenciales: %s", e)
+        logging.error("Error cargando credenciales: {}".format(e))
         return {}
 
 def combinar_configuracion(config, credenciales):
@@ -172,23 +201,25 @@ def combinar_configuracion(config, credenciales):
     
     for alias, conexion_config in conexiones_config.items():
         if conexion_config.get('tipo') == 'local':
-            conexiones_combinadas[alias] = conexion_config
+            conexiones_combinadas[alias] = conexion_config.copy()
             conexiones_combinadas[alias]['alias'] = alias
             continue
             
         if alias not in credenciales:
-            logging.error("No se encontraron credenciales para el alias: %s", alias)
+            logging.error("No se encontraron credenciales para el alias: {}".format(alias))
             continue
-            
+        
+        # Python 2.x: combinar diccionarios manualmente
         conexion_combinada = conexion_config.copy()
-        conexion_combinada.update(credenciales[alias])
+        if alias in credenciales:
+            conexion_combinada.update(credenciales[alias])
         conexion_combinada['alias'] = alias
         conexiones_combinadas[alias] = conexion_combinada
         
         campos_requeridos = ['tipo', 'host', 'usuario', 'contrasena']
         for campo in campos_requeridos:
             if campo not in conexion_combinada:
-                logging.error("Falta campo requerido '%s' en conexión: %s", campo, alias)
+                logging.error("Falta campo requerido '{}' en conexión: {}".format(campo, alias))
                 break
     
     return conexiones_combinadas
@@ -216,13 +247,14 @@ def verificar_dependencias(conexiones):
     
     return True
 
-def eliminar_archivos_locales(ruta_base, dias):
+def eliminar_archivos_locales(ruta_base, dias, mascara=None):
     """
     Elimina archivos locales más antiguos que los días especificados.
     
     Args:
         ruta_base (str): Ruta local del directorio
         dias (int): Días de antigüedad máxima
+        mascara (str, opcional): Patrón para filtrar nombres de archivo
         
     Returns:
         tuple: (archivos_eliminados, archivos_con_error)
@@ -235,6 +267,10 @@ def eliminar_archivos_locales(ruta_base, dias):
     try:
         for root, dirs, files in os.walk(ruta_base):
             for file in files:
+                
+                if mascara and not fnmatch.fnmatch(file, mascara):
+                    continue
+                
                 ruta_completa = os.path.join(root, file)
                 archivos_procesados += 1
 
@@ -245,19 +281,23 @@ def eliminar_archivos_locales(ruta_base, dias):
                         try:
                             os.remove(ruta_completa)
                             archivos_eliminados += 1
-                            logging.info("ELIMINADO (local): %s", ruta_completa)
+                            logging.info("ELIMINADO (local): {}".format(ruta_completa))
                         except OSError as e:
                             archivos_con_error += 1
-                            logging.error("ERROR eliminando %s: %s", ruta_completa, str(e))
+                            logging.error("ERROR eliminando {}: {}".format(ruta_completa, str(e)))
                 except OSError as e:
                     archivos_con_error += 1
-                    logging.error("ERROR accediendo a %s: %s", ruta_completa, str(e))
-
-        logging.info("Resumen LOCAL %s: %d procesados, %d eliminados, %d errores", 
-                    ruta_base, archivos_procesados, archivos_eliminados, archivos_con_error)
+                    logging.error("ERROR accediendo a {}: {}".format(ruta_completa, str(e)))
+        
+        if mascara:
+            logging.info("Resumen LOCAL {} (máscara: '{}'): {} procesados, {} eliminados, {} errores".format(
+                ruta_base, mascara, archivos_procesados, archivos_eliminados, archivos_con_error))
+        else:
+            logging.info("Resumen LOCAL {}: {} procesados, {} eliminados, {} errores".format(
+                ruta_base, archivos_procesados, archivos_eliminados, archivos_con_error))
         
     except Exception as e:
-        logging.error("ERROR procesando ruta local %s: %s", ruta_base, str(e))
+        logging.error("ERROR procesando ruta local {}: {}".format(ruta_base, str(e)))
         archivos_con_error += 1
 
     return archivos_eliminados, archivos_con_error
@@ -277,18 +317,18 @@ def ejecutar_comando_ssh(cliente_ssh, comando, descripcion):
     try:
         stdin, stdout, stderr = cliente_ssh.exec_command(comando)
         exit_status = stdout.channel.recv_exit_status()
-        salida = stdout.read().strip()
-        errores = stderr.read().strip()
+        salida = stdout.read().decode('utf-8').strip()
+        errores = stderr.read().decode('utf-8').strip()
         
         if exit_status != 0:
-            logging.warning("Comando '%s' falló (estado %d): %s", descripcion, exit_status, errores)
+            logging.warning("Comando '{}' falló (estado {}): {}".format(descripcion, exit_status, errores))
         else:
-            logging.debug("Comando '%s' ejecutado exitosamente", descripcion)
+            logging.debug("Comando '{}' ejecutado exitosamente".format(descripcion))
             
         return salida, errores, exit_status
         
     except Exception as e:
-        logging.error("Error ejecutando comando '%s': %s", descripcion, str(e))
+        logging.error("Error ejecutando comando '{}': {}".format(descripcion, str(e)))
         return "", str(e), 1
 
 def eliminar_archivos_ssh(conexion):
@@ -312,12 +352,11 @@ def eliminar_archivos_ssh(conexion):
     comando_sudo = "sudo " if necesita_sudo else ""
 
     try:
-        # Conectar al servidor SSH (una sola vez)
         cliente_ssh = paramiko.SSHClient()
         cliente_ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
-        logging.info("Conectando SSH a %s:%d (alias: %s)", 
-                    conexion['host'], conexion.get('puerto', 22), conexion['alias'])
+        logging.info("Conectando SSH a {}:{} (alias: {})".format(
+            conexion['host'], conexion.get('puerto', 22), conexion['alias']))
         cliente_ssh.connect(
             hostname=conexion['host'],
             port=conexion.get('puerto', 22),
@@ -326,38 +365,45 @@ def eliminar_archivos_ssh(conexion):
             timeout=30
         )
         
-        # Procesar todas las rutas con la misma conexión
         for ruta_config in conexion['rutas']:
             ruta = ruta_config['ruta']
             dias = ruta_config['dias']
+            mascara = ruta_config.get('mascara')
             
-            logging.info("  Procesando ruta SSH: %s - %d días", ruta, dias)
+            if mascara:
+                logging.info("  Procesando ruta SSH: {} - {} días - máscara: '{}'".format(ruta, dias, mascara))
+            else:
+                logging.info("  Procesando ruta SSH: {} - {} días".format(ruta, dias))
             
-            # Verificar si la ruta existe
             comando_test = "{}ls {}".format(comando_sudo, ruta)
             salida, errores, estado = ejecutar_comando_ssh(cliente_ssh, comando_test, "verificar ruta {}".format(ruta))
             
             if estado != 0:
-                logging.error("No se puede acceder a la ruta %s: %s", ruta, errores)
+                logging.error("No se puede acceder a la ruta {}: {}".format(ruta, errores))
                 archivos_con_error_totales += 1
                 continue
             
-            # Buscar archivos antiguos
-            comando_find = "{}find {} -type f -mtime +{} -print".format(comando_sudo, ruta, dias)
+            if mascara:
+                comando_find = "{}find {} -type f -name '{}' -mtime +{} -print".format(comando_sudo, ruta, mascara, dias)
+            else:
+                comando_find = "{}find {} -type f -mtime +{} -print".format(comando_sudo, ruta, dias)
+                
             salida, errores, estado = ejecutar_comando_ssh(cliente_ssh, comando_find, "buscar archivos en {}".format(ruta))
             
             if estado != 0 and "No such file or directory" not in errores:
-                logging.error("Error buscando archivos en %s: %s", ruta, errores)
+                logging.error("Error buscando archivos en {}: {}".format(ruta, errores))
             
             archivos_a_eliminar = [archivo for archivo in salida.split('\n') if archivo.strip()]
             
             if not archivos_a_eliminar:
-                logging.info("No se encontraron archivos para eliminar en %s (más antiguos de %d días)", ruta, dias)
+                if mascara:
+                    logging.info("No se encontraron archivos con máscara '{}' para eliminar en {} (más antiguos de {} días)".format(mascara, ruta, dias))
+                else:
+                    logging.info("No se encontraron archivos para eliminar en {} (más antiguos de {} días)".format(ruta, dias))
                 continue
             
-            logging.info("Encontrados %d archivos para eliminar en %s", len(archivos_a_eliminar), ruta)
+            logging.info("Encontrados {} archivos para eliminar en {}".format(len(archivos_a_eliminar), ruta))
             
-            # Eliminar archivos encontrados
             archivos_eliminados_ruta = 0
             archivos_con_error_ruta = 0
             
@@ -373,31 +419,36 @@ def eliminar_archivos_ssh(conexion):
                     if estado == 0:
                         archivos_eliminados_ruta += 1
                         archivos_eliminados_totales += 1
-                        logging.info("ELIMINADO (SSH): %s", archivo)
+                        logging.info("ELIMINADO (SSH): {}".format(archivo))
                     else:
                         archivos_con_error_ruta += 1
                         archivos_con_error_totales += 1
-                        logging.error("ERROR eliminando %s: %s", archivo, errores)
+                        logging.error("ERROR eliminando {}: {}".format(archivo, errores))
                         
                 except Exception as e:
                     archivos_con_error_ruta += 1
                     archivos_con_error_totales += 1
-                    logging.error("ERROR procesando %s: %s", archivo, str(e))
+                    logging.error("ERROR procesando {}: {}".format(archivo, str(e)))
             
-            logging.info("  Resumen ruta %s: %d eliminados, %d errores", ruta, archivos_eliminados_ruta, archivos_con_error_ruta)
+            if mascara:
+                logging.info("  Resumen ruta {} (máscara: '{}'): {} eliminados, {} errores".format(
+                    ruta, mascara, archivos_eliminados_ruta, archivos_con_error_ruta))
+            else:
+                logging.info("  Resumen ruta {}: {} eliminados, {} errores".format(
+                    ruta, archivos_eliminados_ruta, archivos_con_error_ruta))
         
-        # Cerrar conexión al final
         cliente_ssh.close()
         
     except paramiko.AuthenticationException:
-        logging.error("ERROR SSH: Autenticación fallida para %s@%s", conexion['usuario'], conexion['host'])
+        logging.error("ERROR SSH: Autenticación fallida para {}@{}".format(
+            conexion['usuario'], conexion['host']))
         archivos_con_error_totales += len(conexion['rutas'])
     except paramiko.SSHException as e:
-        logging.error("ERROR SSH: %s", str(e))
+        logging.error("ERROR SSH: {}".format(str(e)))
         archivos_con_error_totales += len(conexion['rutas'])
     except Exception as e:
-        logging.error("ERROR conexión SSH a %s:%d: %s", 
-                     conexion['host'], conexion.get('puerto', 22), str(e))
+        logging.error("ERROR conexión SSH a {}:{}: {}".format(
+            conexion['host'], conexion.get('puerto', 22), str(e)))
         archivos_con_error_totales += len(conexion['rutas'])
 
     return archivos_eliminados_totales, archivos_con_error_totales
@@ -426,14 +477,16 @@ def eliminar_archivos_sftp(conexion):
         transporte.connect(username=conexion['usuario'], password=conexion['contrasena'])
         
         sftp = paramiko.SFTPClient.from_transport(transporte)
-        logging.info("Conectado SFTP a %s:%d (alias: %s)", 
-                    conexion['host'], conexion.get('puerto', 22), conexion['alias'])
+        logging.info("Conectado SFTP a {}:{} (alias: {})".format(
+            conexion['host'], conexion.get('puerto', 22), conexion['alias']))
         
-        def procesar_directorio_sftp(ruta_remota, dias):
+        # Usar listas para simular "nonlocal" en Python 2
+        contadores = [archivos_eliminados_totales, archivos_con_error_totales]
+        
+        def procesar_directorio_sftp(ruta_remota, dias, mascara=None):
             """
             Función interna para procesar recursivamente un directorio SFTP.
             """
-            nonlocal archivos_eliminados_totales, archivos_con_error_totales
             limite_tiempo = time.time() - (dias * 86400)
             
             try:
@@ -443,66 +496,77 @@ def eliminar_archivos_sftp(conexion):
                     if atributo.filename in ['.', '..']:
                         continue
                     
-                    # Si es directorio, procesar recursivamente
                     try:
                         sftp.listdir(ruta_completa)
-                        procesar_directorio_sftp(ruta_completa, dias)
+                        procesar_directorio_sftp(ruta_completa, dias, mascara)
                     except:
-                        # Es archivo - verificar si es antiguo
+                        if mascara:
+                            if not fnmatch.fnmatch(atributo.filename, mascara):
+                                continue
+                                
                         try:
                             mtime = atributo.st_mtime
                             
                             if mtime < limite_tiempo:
                                 sftp.remove(ruta_completa)
-                                archivos_eliminados_totales += 1
-                                logging.info("ELIMINADO (SFTP): %s", ruta_completa)
+                                contadores[0] += 1
+                                logging.info("ELIMINADO (SFTP): {}".format(ruta_completa))
                             else:
-                                logging.debug("Conservado (SFTP): %s", ruta_completa)
+                                logging.debug("Conservado (SFTP): {}".format(ruta_completa))
                         except Exception as e:
-                            archivos_con_error_totales += 1
-                            logging.error("ERROR procesando %s (SFTP): %s", ruta_completa, str(e))
+                            contadores[1] += 1
+                            logging.error("ERROR procesando {} (SFTP): {}".format(ruta_completa, str(e)))
                             
             except Exception as e:
-                archivos_con_error_totales += 1
-                logging.error("ERROR en directorio %s (SFTP): %s", ruta_remota, str(e))
+                contadores[1] += 1
+                logging.error("ERROR en directorio {} (SFTP): {}".format(ruta_remota, str(e)))
         
-        # Procesar todas las rutas con la misma conexión SFTP
         for ruta_config in conexion['rutas']:
             ruta = ruta_config['ruta']
             dias = ruta_config['dias']
+            mascara = ruta_config.get('mascara')
             
-            logging.info("  Procesando ruta SFTP: %s - %d días", ruta, dias)
+            if mascara:
+                logging.info("  Procesando ruta SFTP: {} - {} días - máscara: '{}'".format(ruta, dias, mascara))
+            else:
+                logging.info("  Procesando ruta SFTP: {} - {} días".format(ruta, dias))
             
-            # Verificar si la ruta existe
             try:
                 sftp.listdir(ruta)
-                logging.info("  Ruta verificada: %s", ruta)
+                logging.info("  Ruta verificada: {}".format(ruta))
                 
-                # Procesar directorio recursivamente
-                archivos_antes = archivos_eliminados_totales
-                errores_antes = archivos_con_error_totales
+                archivos_antes = contadores[0]
+                errores_antes = contadores[1]
                 
-                procesar_directorio_sftp(ruta, dias)
+                procesar_directorio_sftp(ruta, dias, mascara)
                 
-                eliminados_ruta = archivos_eliminados_totales - archivos_antes
-                errores_ruta = archivos_con_error_totales - errores_antes
+                eliminados_ruta = contadores[0] - archivos_antes
+                errores_ruta = contadores[1] - errores_antes
                 
-                logging.info("  Resumen ruta %s: %d eliminados, %d errores", ruta, eliminados_ruta, errores_ruta)
+                if mascara:
+                    logging.info("  Resumen ruta {} (máscara: '{}'): {} eliminados, {} errores".format(
+                        ruta, mascara, eliminados_ruta, errores_ruta))
+                else:
+                    logging.info("  Resumen ruta {}: {} eliminados, {} errores".format(
+                        ruta, eliminados_ruta, errores_ruta))
                 
             except Exception as e:
-                logging.error("La ruta no existe o no es accesible: %s - Error: %s", ruta, e)
-                archivos_con_error_totales += 1
+                logging.error("La ruta no existe o no es accesible: {} - Error: {}".format(ruta, e))
+                contadores[1] += 1
         
-        # Cerrar conexión al final
+        archivos_eliminados_totales = contadores[0]
+        archivos_con_error_totales = contadores[1]
+        
         sftp.close()
         transporte.close()
         
     except paramiko.AuthenticationException:
-        logging.error("ERROR SFTP: Autenticación fallida para %s@%s", conexion['usuario'], conexion['host'])
+        logging.error("ERROR SFTP: Autenticación fallida para {}@{}".format(
+            conexion['usuario'], conexion['host']))
         archivos_con_error_totales += len(conexion['rutas'])
     except Exception as e:
-        logging.error("ERROR conexión SFTP a %s:%d: %s", 
-                     conexion['host'], conexion.get('puerto', 22), str(e))
+        logging.error("ERROR conexión SFTP a {}:{}: {}".format(
+            conexion['host'], conexion.get('puerto', 22), str(e)))
         archivos_con_error_totales += len(conexion['rutas'])
 
     return archivos_eliminados_totales, archivos_con_error_totales
@@ -522,18 +586,19 @@ def eliminar_archivos_ftp(conexion):
     archivos_con_error_totales = 0
 
     try:
-        # Conectar al servidor FTP (una sola vez)
-        logging.info("Conectando FTP a %s:%d (alias: %s)", 
-                    conexion['host'], conexion.get('puerto', 21), conexion['alias'])
+        logging.info("Conectando FTP a {}:{} (alias: {})".format(
+            conexion['host'], conexion.get('puerto', 21), conexion['alias']))
         ftp = ftplib.FTP()
-        ftp.connect(conexion['host'], conexion.get('puerto', 21))
+        ftp.connect(conexion['host'], conexion.get('puerto', 21), timeout=30)
         ftp.login(conexion['usuario'], conexion['contrasena'])
         
-        def procesar_directorio_ftp(path, dias):
+        # Usar listas para simular "nonlocal" en Python 2
+        contadores = [archivos_eliminados_totales, archivos_con_error_totales]
+        
+        def procesar_directorio_ftp(path, dias, mascara=None):
             """
             Función interna para procesar recursivamente un directorio FTP.
             """
-            nonlocal archivos_eliminados_totales, archivos_con_error_totales
             limite_tiempo = time.time() - (dias * 86400)
             
             try:
@@ -552,8 +617,12 @@ def eliminar_archivos_ftp(conexion):
                     ruta_completa = "{}/{}".format(path, nombre) if path else nombre
                     
                     if linea.startswith('d'):
-                        procesar_directorio_ftp(ruta_completa, dias)
+                        procesar_directorio_ftp(ruta_completa, dias, mascara)
                     else:
+                        if mascara:
+                            if not fnmatch.fnmatch(nombre, mascara):
+                                continue
+                                
                         try:
                             resp = ftp.sendcmd("MDTM {}".format(ruta_completa))
                             if resp.startswith('213'):
@@ -562,50 +631,60 @@ def eliminar_archivos_ftp(conexion):
                                 
                                 if mtime < limite_tiempo:
                                     ftp.delete(ruta_completa)
-                                    archivos_eliminados_totales += 1
-                                    logging.info("ELIMINADO (FTP): %s", ruta_completa)
+                                    contadores[0] += 1
+                                    logging.info("ELIMINADO (FTP): {}".format(ruta_completa))
                         except ftplib.error_perm as e:
-                            logging.warning("No se pudo obtener fecha de %s (FTP): %s", ruta_completa, e)
+                            logging.warning("No se pudo obtener fecha de {} (FTP): {}".format(ruta_completa, e))
                         except Exception as e:
-                            archivos_con_error_totales += 1
-                            logging.error("ERROR procesando %s (FTP): %s", ruta_completa, str(e))
+                            contadores[1] += 1
+                            logging.error("ERROR procesando {} (FTP): {}".format(ruta_completa, str(e)))
                             
             except Exception as e:
-                archivos_con_error_totales += 1
-                logging.error("ERROR en directorio %s (FTP): %s", path, str(e))
+                contadores[1] += 1
+                logging.error("ERROR en directorio {} (FTP): {}".format(path, str(e)))
         
-        # Procesar todas las rutas con la misma conexión FTP
         for ruta_config in conexion['rutas']:
             ruta = ruta_config['ruta']
             dias = ruta_config['dias']
+            mascara = ruta_config.get('mascara')
             
-            logging.info("  Procesando ruta FTP: %s - %d días", ruta, dias)
+            if mascara:
+                logging.info("  Procesando ruta FTP: {} - {} días - máscara: '{}'".format(ruta, dias, mascara))
+            else:
+                logging.info("  Procesando ruta FTP: {} - {} días".format(ruta, dias))
             
             try:
                 ftp.cwd(ruta)
-                archivos_antes = archivos_eliminados_totales
-                errores_antes = archivos_con_error_totales
+                archivos_antes = contadores[0]
+                errores_antes = contadores[1]
                 
-                procesar_directorio_ftp('', dias)
+                procesar_directorio_ftp('', dias, mascara)
                 
-                eliminados_ruta = archivos_eliminados_totales - archivos_antes
-                errores_ruta = archivos_con_error_totales - errores_antes
+                eliminados_ruta = contadores[0] - archivos_antes
+                errores_ruta = contadores[1] - errores_antes
                 
-                logging.info("  Resumen ruta %s: %d eliminados, %d errores", ruta, eliminados_ruta, errores_ruta)
+                if mascara:
+                    logging.info("  Resumen ruta {} (máscara: '{}'): {} eliminados, {} errores".format(
+                        ruta, mascara, eliminados_ruta, errores_ruta))
+                else:
+                    logging.info("  Resumen ruta {}: {} eliminados, {} errores".format(
+                        ruta, eliminados_ruta, errores_ruta))
                 
             except Exception as e:
-                logging.error("La ruta no existe o no es accesible: %s - Error: %s", ruta, e)
-                archivos_con_error_totales += 1
+                logging.error("La ruta no existe o no es accesible: {} - Error: {}".format(ruta, e))
+                contadores[1] += 1
         
-        # Cerrar conexión al final
+        archivos_eliminados_totales = contadores[0]
+        archivos_con_error_totales = contadores[1]
+        
         ftp.quit()
         
     except ftplib.all_errors as e:
-        logging.error("ERROR FTP: %s", str(e))
+        logging.error("ERROR FTP: {}".format(str(e)))
         archivos_con_error_totales += len(conexion['rutas'])
     except Exception as e:
-        logging.error("ERROR conexión FTP a %s:%d: %s", 
-                     conexion['host'], conexion.get('puerto', 21), str(e))
+        logging.error("ERROR conexión FTP a {}:{}: {}".format(
+            conexion['host'], conexion.get('puerto', 21), str(e)))
         archivos_con_error_totales += len(conexion['rutas'])
 
     return archivos_eliminados_totales, archivos_con_error_totales
@@ -621,7 +700,7 @@ def procesar_conexion(alias, conexion):
     Returns:
         tuple: (archivos_eliminados, archivos_con_error)
     """
-    logging.info("Procesando conexión: %s (%s)", alias, conexion['tipo'].upper())
+    logging.info("Procesando conexión: {} ({})".format(alias, conexion['tipo'].upper()))
     
     try:
         if conexion['tipo'] == 'local':
@@ -630,32 +709,42 @@ def procesar_conexion(alias, conexion):
             archivos_con_error_totales = 0
             
             for ruta_config in conexion['rutas']:
-                logging.info("  Ruta: %s - %d días", ruta_config['ruta'], ruta_config['dias'])
-                eliminados, errores = eliminar_archivos_locales(ruta_config['ruta'], ruta_config['dias'])
+                ruta = ruta_config['ruta']
+                dias = ruta_config['dias']
+                mascara = ruta_config.get('mascara')
+                
+                if mascara:
+                    logging.info("  Ruta: {} - {} días - máscara: '{}'".format(ruta, dias, mascara))
+                else:
+                    logging.info("  Ruta: {} - {} días".format(ruta, dias))
+                    
+                eliminados, errores = eliminar_archivos_locales(ruta, dias, mascara)
                 archivos_eliminados_totales += eliminados
                 archivos_con_error_totales += errores
-                logging.info("  Resumen ruta: %d eliminados, %d errores", eliminados, errores)
+                
+                if mascara:
+                    logging.info("  Resumen ruta (máscara: '{}'): {} eliminados, {} errores".format(
+                        mascara, eliminados, errores))
+                else:
+                    logging.info("  Resumen ruta: {} eliminados, {} errores".format(eliminados, errores))
                 
             return archivos_eliminados_totales, archivos_con_error_totales
             
         elif conexion['tipo'] == 'ssh':
-            # Una sola conexión SSH para todas las rutas
             return eliminar_archivos_ssh(conexion)
             
         elif conexion['tipo'] == 'sftp':
-            # Una sola conexión SFTP para todas las rutas
             return eliminar_archivos_sftp(conexion)
             
         elif conexion['tipo'] == 'ftp':
-            # Una sola conexión FTP para todas las rutas
             return eliminar_archivos_ftp(conexion)
             
         else:
-            logging.error("Tipo de conexión desconocido: %s", conexion['tipo'])
+            logging.error("Tipo de conexión desconocido: {}".format(conexion['tipo']))
             return 0, len(conexion['rutas'])
             
     except Exception as e:
-        logging.error("ERROR procesando conexión %s: %s", alias, str(e))
+        logging.error("ERROR procesando conexión {}: {}".format(alias, str(e)))
         return 0, len(conexion['rutas'])
 
 def eliminar_archivos_antiguos(config_file, credenciales_file=None):
@@ -669,7 +758,7 @@ def eliminar_archivos_antiguos(config_file, credenciales_file=None):
     log_path = configurar_logging()
     logging.info("=" * 60)
     logging.info("INICIO del proceso de eliminación de archivos antiguos")
-    logging.info("Log guardado en: %s", log_path)
+    logging.info("Log guardado en: {}".format(log_path))
     
     try:
         # Cargar configuración y credenciales
@@ -689,7 +778,7 @@ def eliminar_archivos_antiguos(config_file, credenciales_file=None):
         else:
             logging.info("SSH/SFTP: No disponible (paramiko no instalado)")
         
-        logging.info("Total de conexiones a procesar: %d", len(conexiones))
+        logging.info("Total de conexiones a procesar: {}".format(len(conexiones)))
         logging.info("=" * 60)
         
         # Verificar dependencias necesarias
@@ -709,20 +798,20 @@ def eliminar_archivos_antiguos(config_file, credenciales_file=None):
             archivos_con_error_totales += errores
             
             tiempo_procesamiento = time.time() - tiempo_inicio
-            logging.info("Resumen conexión %s: %d eliminados, %d errores - Tiempo: %.2fs", 
-                        alias, eliminados, errores, tiempo_procesamiento)
+            logging.info("Resumen conexión {}: {} eliminados, {} errores - Tiempo: {:.2f}s".format(
+                alias, eliminados, errores, tiempo_procesamiento))
         
         tiempo_total = time.time() - tiempo_inicio_total
         logging.info("=" * 60)
         logging.info("RESUMEN FINAL:")
-        logging.info("Archivos eliminados: %d", archivos_eliminados_totales)
-        logging.info("Archivos con error: %d", archivos_con_error_totales)
-        logging.info("Tiempo total de ejecución: %.2f segundos", tiempo_total)
+        logging.info("Archivos eliminados: {}".format(archivos_eliminados_totales))
+        logging.info("Archivos con error: {}".format(archivos_con_error_totales))
+        logging.info("Tiempo total de ejecución: {:.2f} segundos".format(tiempo_total))
         logging.info("FIN del proceso de eliminación de archivos antiguos")
         logging.info("=" * 60)
         
     except Exception as e:
-        logging.error("ERROR CRÍTICO en el proceso: %s", str(e))
+        logging.error("ERROR CRÍTICO en el proceso: {}".format(str(e)))
         raise
 
 def main():
@@ -744,7 +833,7 @@ def main():
     try:
         eliminar_archivos_antiguos(config_file, credenciales_file)
     except Exception as e:
-        logging.error("Error inesperado: %s", str(e))
+        logging.error("Error inesperado: {}".format(str(e)))
         sys.exit(1)
 
 if __name__ == "__main__":

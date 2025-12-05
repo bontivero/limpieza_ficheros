@@ -1,16 +1,37 @@
 ### Archivo de ejemplo (config.json.example)
 {
-    "conexiones": {
-        "ejemplo_ssh": {
-            "tipo": "ssh",
-            "host": "servidor.ejemplo.com",
-            "puerto": 22,
-            "usuario": "TU_USUARIO",
-            "contraseña": "TU_CONTRASEÑA",
-            "necesita_sudo": false,
-            "rutas": [
-                {"ruta": "/ruta/backup/aplicacion", "dias": 30}
-            ]
+  "conexiones": {
+    "local1": {
+      "tipo": "local",
+      "rutas": [
+        {
+          "ruta": "/tmp",
+          "dias": 7,
+          "mascara": "ldr_*"
+        },
+        {
+          "ruta": "/var/log",
+          "dias": 30,
+          "mascara": "*.log"
         }
+      ]
+    },
+    "servidor1": {
+      "tipo": "ssh",
+      "host": "192.168.1.100",
+      "puerto": 22,
+      "necesita_sudo": true,
+      "rutas": [
+        {
+          "ruta": "/var/log",
+          "dias": 15,
+          "mascara": "syslog*"
+        },
+        {
+          "ruta": "/tmp",
+          "dias": 3
+        }
+      ]
     }
+  }
 }

@@ -1,18 +1,38 @@
 #!/usr/bin/env python3
 """
-Script para eliminar archivos antiguos basado en un archivo de configuración.
+Script para eliminar archivos antiguos basado en un archivo de configuración JSON.
 
-Este script lee un archivo de configuración que especifica rutas (locales, SSH, SFTP o FTP) y tiempos
-en días para eliminar archivos recursivamente. Las credenciales se almacenan en un archivo separado.
+Este script lee un archivo de configuración JSON que especifica rutas (locales, SSH, SFTP o FTP), 
+tiempos en días para eliminar archivos recursivamente y máscaras opcionales para filtrar por nombre. 
+Las credenciales se almacenan en un archivo separado.
 
-Formato del archivo de configuración:
-LOCAL: /ruta/directorio/|dias
-SSH: ssh://alias_servidor/ruta|dias
-SFTP: sftp://alias_servidor/ruta|dias
-FTP: ftp://alias_servidor/ruta|dias
+Estructura del archivo de rutas y configuración (config.json) explicado y ejemplificado
+en config.json.example
 
-config.json -> Rutas y configuración
-credenciales.json -> Credenciales de acceso
+Estructura del archivo de credenciales de acceso (credenciales.json) explicado y ejemplificado
+en credenciales.json.example
+
+La máscara permite filtrar archivos por nombre usando patrones fnmatch:
+- "ldr_*"    - archivos que comienzan con "ldr_"
+- "*.log"    - archivos con extensión .log
+- "*backup*" - archivos que contienen "backup"
+- "data_???" - archivos que comienzan con "data_" seguido de 3 caracteres
+- Si no se especifica máscara, se procesan todos los archivos
+
+Funcionalidades:
+- Eliminación recursiva de archivos antiguos en rutas locales
+- Conexión SSH para ejecución remota de comandos
+- Conexión SFTP para manipulación remota de archivos
+- Conexión FTP para servidores FTP tradicionales
+- Log detallado con resumen de operaciones
+- Manejo de errores con registro de archivos problemáticos
+- Soporte para sudo en conexiones SSH
+- Una sola conexión por servidor para múltiples rutas
+
+Uso:
+    python limpieza.py config.json [credenciales.json]
+
+Nota: Para conexiones SSH/SFTP se requiere la librería paramiko.
 """
 
 import os
@@ -21,6 +41,7 @@ import time
 import datetime
 import logging
 import ftplib
+import fnmatch
 import json
 from pathlib import Path
 from urllib.parse import urlparse
@@ -194,13 +215,14 @@ def verificar_dependencias(conexiones):
     
     return True
 
-def eliminar_archivos_locales(ruta_base, dias):
+def eliminar_archivos_locales(ruta_base, dias, mascara=None):
     """
     Elimina archivos locales más antiguos que los días especificados.
     
     Args:
         ruta_base (str): Ruta local del directorio
         dias (int): Días de antigüedad máxima
+        mascara (str, opcional): Patrón para filtrar nombres de archivo
         
     Returns:
         tuple: (archivos_eliminados, archivos_con_error)
@@ -213,6 +235,10 @@ def eliminar_archivos_locales(ruta_base, dias):
     try:
         for root, dirs, files in os.walk(ruta_base):
             for file in files:
+                
+                if mascara and not fnmatch.fnmatch(file, mascara):
+                    continue
+                
                 ruta_completa = os.path.join(root, file)
                 archivos_procesados += 1
 
@@ -230,8 +256,11 @@ def eliminar_archivos_locales(ruta_base, dias):
                 except OSError as e:
                     archivos_con_error += 1
                     logging.error(f"ERROR accediendo a {ruta_completa}: {str(e)}")
-
-        logging.info(f"Resumen LOCAL {ruta_base}: {archivos_procesados} procesados, {archivos_eliminados} eliminados, {archivos_con_error} errores")
+        
+        if mascara:
+            logging.info(f"Resumen LOCAL {ruta_base} (máscara: '{mascara}'): {archivos_procesados} procesados, {archivos_eliminados} eliminados, {archivos_con_error} errores")
+        else:
+            logging.info(f"Resumen LOCAL {ruta_base}: {archivos_procesados} procesados, {archivos_eliminados} eliminados, {archivos_con_error} errores")
         
     except Exception as e:
         logging.error(f"ERROR procesando ruta local {ruta_base}: {str(e)}")
@@ -289,7 +318,6 @@ def eliminar_archivos_ssh(conexion):
     comando_sudo = "sudo " if necesita_sudo else ""
 
     try:
-        # Conectar al servidor SSH (una sola vez)
         cliente_ssh = paramiko.SSHClient()
         cliente_ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
@@ -302,14 +330,16 @@ def eliminar_archivos_ssh(conexion):
             timeout=30
         )
         
-        # Procesar todas las rutas con la misma conexión
         for ruta_config in conexion['rutas']:
             ruta = ruta_config['ruta']
             dias = ruta_config['dias']
+            mascara = ruta_config.get('mascara')
             
-            logging.info(f"  Procesando ruta SSH: {ruta} - {dias} días")
+            if mascara:
+                logging.info(f"  Procesando ruta SSH: {ruta} - {dias} días - máscara: '{mascara}'")
+            else:
+                logging.info(f"  Procesando ruta SSH: {ruta} - {dias} días")
             
-            # Verificar si la ruta existe
             comando_test = f"{comando_sudo}ls {ruta}"
             salida, errores, estado = ejecutar_comando_ssh(cliente_ssh, comando_test, f"verificar ruta {ruta}")
             
@@ -318,8 +348,11 @@ def eliminar_archivos_ssh(conexion):
                 archivos_con_error_totales += 1
                 continue
             
-            # Buscar archivos antiguos
-            comando_find = f"{comando_sudo}find {ruta} -type f -mtime +{dias} -print"
+            if mascara:
+                comando_find = f"{comando_sudo}find {ruta} -type f -name '{mascara}' -mtime +{dias} -print"
+            else:
+                comando_find = f"{comando_sudo}find {ruta} -type f -mtime +{dias} -print"
+                
             salida, errores, estado = ejecutar_comando_ssh(cliente_ssh, comando_find, f"buscar archivos en {ruta}")
             
             if estado != 0 and "No such file or directory" not in errores:
@@ -328,12 +361,14 @@ def eliminar_archivos_ssh(conexion):
             archivos_a_eliminar = [archivo for archivo in salida.split('\n') if archivo.strip()]
             
             if not archivos_a_eliminar:
-                logging.info(f"No se encontraron archivos para eliminar en {ruta} (más antiguos de {dias} días)")
+                if mascara:
+                    logging.info(f"No se encontraron archivos con máscara '{mascara}' para eliminar en {ruta} (más antiguos de {dias} días)")
+                else:
+                    logging.info(f"No se encontraron archivos para eliminar en {ruta} (más antiguos de {dias} días)")
                 continue
             
             logging.info(f"Encontrados {len(archivos_a_eliminar)} archivos para eliminar en {ruta}")
             
-            # Eliminar archivos encontrados
             archivos_eliminados_ruta = 0
             archivos_con_error_ruta = 0
             
@@ -360,9 +395,11 @@ def eliminar_archivos_ssh(conexion):
                     archivos_con_error_totales += 1
                     logging.error(f"ERROR procesando {archivo}: {str(e)}")
             
-            logging.info(f"  Resumen ruta {ruta}: {archivos_eliminados_ruta} eliminados, {archivos_con_error_ruta} errores")
+            if mascara:
+                logging.info(f"  Resumen ruta {ruta} (máscara: '{mascara}'): {archivos_eliminados_ruta} eliminados, {archivos_con_error_ruta} errores")
+            else:
+                logging.info(f"  Resumen ruta {ruta}: {archivos_eliminados_ruta} eliminados, {archivos_con_error_ruta} errores")
         
-        # Cerrar conexión al final
         cliente_ssh.close()
         
     except paramiko.AuthenticationException:
@@ -403,7 +440,7 @@ def eliminar_archivos_sftp(conexion):
         sftp = paramiko.SFTPClient.from_transport(transporte)
         logging.info(f"Conectado SFTP a {conexion['host']}:{conexion.get('puerto', 22)} (alias: {conexion['alias']})")
         
-        def procesar_directorio_sftp(ruta_remota, dias):
+        def procesar_directorio_sftp(ruta_remota, dias, mascara=None):
             """
             Función interna para procesar recursivamente un directorio SFTP.
             """
@@ -417,12 +454,15 @@ def eliminar_archivos_sftp(conexion):
                     if atributo.filename in ['.', '..']:
                         continue
                     
-                    # Si es directorio, procesar recursivamente
                     try:
                         sftp.listdir(ruta_completa)
-                        procesar_directorio_sftp(ruta_completa, dias)
+                        procesar_directorio_sftp(ruta_completa, dias, mascara)
                     except:
-                        # Es archivo - verificar si es antiguo
+                        if mascara:
+                            import fnmatch
+                            if not fnmatch.fnmatch(atributo.filename, mascara):
+                                continue
+                                
                         try:
                             mtime = atributo.st_mtime
                             
@@ -440,34 +480,37 @@ def eliminar_archivos_sftp(conexion):
                 archivos_con_error_totales += 1
                 logging.error(f"ERROR en directorio {ruta_remota} (SFTP): {str(e)}")
         
-        # Procesar todas las rutas con la misma conexión SFTP
         for ruta_config in conexion['rutas']:
             ruta = ruta_config['ruta']
             dias = ruta_config['dias']
+            mascara = ruta_config.get('mascara')
             
-            logging.info(f"  Procesando ruta SFTP: {ruta} - {dias} días")
+            if mascara:
+                logging.info(f"  Procesando ruta SFTP: {ruta} - {dias} días - máscara: '{mascara}'")
+            else:
+                logging.info(f"  Procesando ruta SFTP: {ruta} - {dias} días")
             
-            # Verificar si la ruta existe
             try:
                 sftp.listdir(ruta)
                 logging.info(f"  Ruta verificada: {ruta}")
                 
-                # Procesar directorio recursivamente
                 archivos_antes = archivos_eliminados_totales
                 errores_antes = archivos_con_error_totales
                 
-                procesar_directorio_sftp(ruta, dias)
+                procesar_directorio_sftp(ruta, dias, mascara)
                 
                 eliminados_ruta = archivos_eliminados_totales - archivos_antes
                 errores_ruta = archivos_con_error_totales - errores_antes
                 
-                logging.info(f"  Resumen ruta {ruta}: {eliminados_ruta} eliminados, {errores_ruta} errores")
+                if mascara:
+                    logging.info(f"  Resumen ruta {ruta} (máscara: '{mascara}'): {eliminados_ruta} eliminados, {errores_ruta} errores")
+                else:
+                    logging.info(f"  Resumen ruta {ruta}: {eliminados_ruta} eliminados, {errores_ruta} errores")
                 
             except Exception as e:
                 logging.error(f"La ruta no existe o no es accesible: {ruta} - Error: {e}")
                 archivos_con_error_totales += 1
         
-        # Cerrar conexión al final
         sftp.close()
         transporte.close()
         
@@ -495,13 +538,12 @@ def eliminar_archivos_ftp(conexion):
     archivos_con_error_totales = 0
 
     try:
-        # Conectar al servidor FTP (una sola vez)
         logging.info(f"Conectando FTP a {conexion['host']}:{conexion.get('puerto', 21)} (alias: {conexion['alias']})")
         ftp = ftplib.FTP()
         ftp.connect(conexion['host'], conexion.get('puerto', 21), timeout=30)
         ftp.login(conexion['usuario'], conexion['contrasena'])
         
-        def procesar_directorio_ftp(path, dias):
+        def procesar_directorio_ftp(path, dias, mascara=None):
             """
             Función interna para procesar recursivamente un directorio FTP.
             """
@@ -524,8 +566,13 @@ def eliminar_archivos_ftp(conexion):
                     ruta_completa = f"{path}/{nombre}" if path else nombre
                     
                     if linea.startswith('d'):
-                        procesar_directorio_ftp(ruta_completa, dias)
+                        procesar_directorio_ftp(ruta_completa, dias, mascara)
                     else:
+                        if mascara:
+                            import fnmatch
+                            if not fnmatch.fnmatch(nombre, mascara):
+                                continue
+                                
                         try:
                             resp = ftp.sendcmd(f"MDTM {ruta_completa}")
                             if resp.startswith('213'):
@@ -546,30 +593,35 @@ def eliminar_archivos_ftp(conexion):
                 archivos_con_error_totales += 1
                 logging.error(f"ERROR en directorio {path} (FTP): {str(e)}")
         
-        # Procesar todas las rutas con la misma conexión FTP
         for ruta_config in conexion['rutas']:
             ruta = ruta_config['ruta']
             dias = ruta_config['dias']
+            mascara = ruta_config.get('mascara')
             
-            logging.info(f"  Procesando ruta FTP: {ruta} - {dias} días")
+            if mascara:
+                logging.info(f"  Procesando ruta FTP: {ruta} - {dias} días - máscara: '{mascara}'")
+            else:
+                logging.info(f"  Procesando ruta FTP: {ruta} - {dias} días")
             
             try:
                 ftp.cwd(ruta)
                 archivos_antes = archivos_eliminados_totales
                 errores_antes = archivos_con_error_totales
                 
-                procesar_directorio_ftp('', dias)
+                procesar_directorio_ftp('', dias, mascara)
                 
                 eliminados_ruta = archivos_eliminados_totales - archivos_antes
                 errores_ruta = archivos_con_error_totales - errores_antes
                 
-                logging.info(f"  Resumen ruta {ruta}: {eliminados_ruta} eliminados, {errores_ruta} errores")
+                if mascara:
+                    logging.info(f"  Resumen ruta {ruta} (máscara: '{mascara}'): {eliminados_ruta} eliminados, {errores_ruta} errores")
+                else:
+                    logging.info(f"  Resumen ruta {ruta}: {eliminados_ruta} eliminados, {errores_ruta} errores")
                 
             except Exception as e:
                 logging.error(f"La ruta no existe o no es accesible: {ruta} - Error: {e}")
                 archivos_con_error_totales += 1
         
-        # Cerrar conexión al final
         ftp.quit()
         
     except ftplib.all_errors as e:
@@ -601,24 +653,33 @@ def procesar_conexion(alias, conexion):
             archivos_con_error_totales = 0
             
             for ruta_config in conexion['rutas']:
-                logging.info(f"  Ruta: {ruta_config['ruta']} - {ruta_config['dias']} días")
-                eliminados, errores = eliminar_archivos_locales(ruta_config['ruta'], ruta_config['dias'])
+                ruta = ruta_config['ruta']
+                dias = ruta_config['dias']
+                mascara = ruta_config.get('mascara')
+                
+                if mascara:
+                    logging.info(f"  Ruta: {ruta} - {dias} días - máscara: '{mascara}'")
+                else:
+                    logging.info(f"  Ruta: {ruta} - {dias} días")
+                    
+                eliminados, errores = eliminar_archivos_locales(ruta, dias, mascara)
                 archivos_eliminados_totales += eliminados
                 archivos_con_error_totales += errores
-                logging.info(f"  Resumen ruta: {eliminados} eliminados, {errores} errores")
+                
+                if mascara:
+                    logging.info(f"  Resumen ruta (máscara: '{mascara}'): {eliminados} eliminados, {errores} errores")
+                else:
+                    logging.info(f"  Resumen ruta: {eliminados} eliminados, {errores} errores")
                 
             return archivos_eliminados_totales, archivos_con_error_totales
             
         elif conexion['tipo'] == 'ssh':
-            # Una sola conexión SSH para todas las rutas
             return eliminar_archivos_ssh(conexion)
             
         elif conexion['tipo'] == 'sftp':
-            # Una sola conexión SFTP para todas las rutas
             return eliminar_archivos_sftp(conexion)
             
         elif conexion['tipo'] == 'ftp':
-            # Una sola conexión FTP para todas las rutas
             return eliminar_archivos_ftp(conexion)
             
         else:
