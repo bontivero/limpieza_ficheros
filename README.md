@@ -1,12 +1,13 @@
 # Script de Limpieza de Archivos Antiguos
 
-Script automatizado para eliminar archivos antiguos en sistemas locales y remotos (SSH, SFTP, FTP) con configuración flexible, filtrado por máscara de archivos, y logging detallado. Compatible con Python 2.x y 3.x.
+Script automatizado para eliminar archivos antiguos en sistemas locales y remotos (SSH, SFTP, FTP) con configuración flexible, filtrado por máscara de archivos, logging detallado y diagnóstico avanzado. Compatible con Python 2.x y 3.x.
 
 ## Características
 
 - ✅ **Múltiples protocolos**: Local, SSH, SFTP y FTP
 - ✅ **Filtrado por máscara**: Soporte para patrones fnmatch (ej: `ldr_*`, `*.log`, `*backup*`)
 - ✅ **Python 2.x/3.x compatible**: Funciona en versiones antiguas y modernas de Python
+- ✅ Diagnóstico avanzado: Verificación preventiva de todos los accesos
 - ✅ **Configuración JSON**: Estructura organizada y fácil de mantener
 - ✅ **Credenciales separadas**: Mayor seguridad separando rutas y credenciales
 - ✅ **Logging completo**: Registros detallados con timestamps y estadísticas
@@ -19,13 +20,14 @@ Script automatizado para eliminar archivos antiguos en sistemas locales y remoto
 ### Estructura de archivos
 
 limpieza-archivos/
-├── limpieza.py              # Script principal (Python 2/3 compatible)
-├── config.json              # Configuración de RUTAS (NO SUBIR AL GIT)
-├── config.json.example      # Ejemplo de configuración con máscaras
-├── credenciales.json        # CREDENCIALES (NO SUBIR AL GIT)
-├── credenciales.json.example # Ejemplo de credenciales
-├── logs/                    # Directorio de logs automáticos
-├── examples/                # Ejemplos adicionales
+├── limpieza.py                 # Script principal (Python 2/3 compatible)
+├── config.json                 # Configuración de RUTAS (NO SUBIR AL GIT)
+├── config.json.example         # Ejemplo de configuración con máscaras
+├── credenciales.json           # CREDENCIALES (NO SUBIR AL GIT)
+├── credenciales.json.example   # Ejemplo de credenciales 
+├── diagnostico_acceso.py       # Script de diagnóstico de acceso (Python 2/3 compatible)
+├── logs/                       # Directorio de logs automáticos
+├── examples/                   # Ejemplos adicionales
 │   ├── config_con_mascaras.json
 │   └── mascaras_comunes.txt
 └── README.md                # Este archivo
@@ -123,6 +125,24 @@ python limpieza.py config.json credenciales.json
 
 # Con Python 2.7
 python2 limpieza.py config.json
+
+# Diagnóstico completo (todos los protocolos)
+python diagnostico_acceso.py
+
+# Con archivos específicos
+python diagnostico_acceso.py --config mi_config.json --credenciales mis_credenciales.json
+
+# Solo un tipo específico
+python diagnostico_acceso.py --tipo ssh
+
+# Solo una conexión específica
+python diagnostico_acceso.py --alias mi_servidor_ftp
+
+# Modo verbose
+python diagnostico_acceso.py --verbose
+
+# Ayuda completa
+python diagnostico_acceso.py --help
 ```
 
 ## Ejecución programada con Crontab
